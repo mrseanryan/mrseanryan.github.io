@@ -1,0 +1,56 @@
+﻿<link rel="import"
+      href="bower_components/polymer/polymer.html">
+
+<dom-module id="loan-words-list">
+
+    <template>
+        <!-- scoped CSS for this element -->
+        <style>
+            div {
+                display: inline-block;
+                background-color: #ccc;
+                border-radius: 8px;
+                padding: 4px;
+            }
+        </style>
+        <div>
+            loan words in the English language
+            <br/>
+
+            <div class="results"></div>
+
+            <!-- any children are rendered here -->
+            <content></content>
+        </div>
+    </template>
+
+    <script>
+        //iffy to avoid polluting globals:
+        (function() {
+            'use strict';
+            Polymer({
+                is: "loan-words-list"
+            });
+
+            //ref: http://ctrlq.org/code/20004-google-spreadsheets-json
+            var sheetId = '1xImix71ns0btRd0c-OgHxTErkt_zxC7mXvEJpdOyGQs';
+            var gSheetsUrl = 'https://spreadsheets.google.com/feeds/list/' + sheetId + '/od6/public/basic?alt=json';
+
+            $.getJSON(gSheetsUrl, function(data) {
+
+                var entry = data.feed.entry;
+
+                $(entry).each(function() {
+
+                    var title = this.title.$t;
+
+                    var content = this.content.$t;
+
+                    $('.results').prepend('<h2>' + title + '</h2><p>' + content + '</p>');
+                });
+
+            });
+        })();
+    </script>
+
+</dom-module>

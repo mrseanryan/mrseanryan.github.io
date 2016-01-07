@@ -1,0 +1,564 @@
+﻿<link rel="import"
+      href="bower_components/polymer/polymer.html">
+
+<dom-module id="loan-words-list-as-map-markers">
+
+    <template>
+        <!-- scoped CSS for this element -->
+        <!--<google-map latitude="-25.363" longitude="131.044" min-zoom="1" max-zoom="11"
+                    language="en"
+                    class="loan-words-list-as-map-markers-results">
+            <google-map-marker latitude="37.779" longitude="-122.3892"
+                               title="Go Giants!" draggable="true">
+                <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/San_Francisco_Giants_Cap_Insignia.svg/200px-San_Francisco_Giants_Cap_Insignia.svg.png" />
+            </google-map-marker>
+
+        </google-map>-->
+
+
+    </template>
+
+    <!--TODO use a service module
+    ref: http://stackoverflow.com/questions/30789743/show-polymer-indeterminate-paper-progress-when-iron-ajax-is-loading
+    -->
+
+    <script>
+        //iffy to avoid polluting globals:
+        (function () {
+            'use strict';
+            var isDebugging = false;
+            //var isDebugging = true;
+
+            Polymer({
+                is: "loan-words-list-as-map-markers"
+            });
+
+            //ref: http://ctrlq.org/code/20004-google-spreadsheets-json
+            var sheetId = '1xImix71ns0btRd0c-OgHxTErkt_zxC7mXvEJpdOyGQs';
+            var gSheetsUrl = 'https://spreadsheets.google.com/feeds/list/' + sheetId + '/od6/public/basic?alt=json';
+
+            var self = this;
+
+            var infowindow;
+
+            //TODO move this out to a service module - see TODO in html
+            var setImageUrlFromFlickr = function (resultObject, resultProperty, word) {
+                //get the list of image IDs
+                //ref: https://www.flickr.com/services/api/explore/flickr.photos.search
+                //ref: https://www.flickr.com/services/api/flickr.photos.search.htm
+
+                //Flickr API key belonging to SR - loanWordsPolymer
+                var searchUrl = 'https://api.flickr.com/services/rest/?method=flickr.photos.search&api_key=4c036f757b4f438e58f07932ef4ecc47&tags={tags}&extras=tags&per_page=10&format=json&nojsoncallback=1';
+                searchUrl = searchUrl.replace('{tags}', word);
+
+                //ajax & promises - ref: http://www.htmlgoodies.com/beyond/javascript/making-promises-with-jquery-deferred.html
+
+                //TODO we could cache the images (each browser gets its own images)
+                //but not vital, as Flickr performance is good.
+
+                var jqxhr = $.ajax(
+                        {
+                            type: 'GET',
+                            url: searchUrl,
+                            dataType: 'json',
+                            jsonp: false
+                        })
+                    .done(function (data, stat, xhr) {
+                        if (data.stat !== 'ok') {
+                            console.error('error from search web service: ' + JSON.stringify(data));
+                        }
+
+                        //pick the first best match:
+                        if (data.photos.photo.length === 0) {
+                            console.warn('0 flickr photos found for word - ' + word);
+                            return;
+                        }
+                        var titleMatches = _.filter(data.photos.photo, function (photo) {
+                            return photo.title.toLowerCase().indexOf(word.toLowerCase()) >= 0;
+                        });
+                        titleMatches = _.shuffle(titleMatches);
+                        var firstBestMatch = _.first(titleMatches);
+                        if (!firstBestMatch) {
+                            console.warn("could not find an image with title = " + word + " so picking the 1st match");
+                            firstBestMatch = _.first(data.photos.photo);
+                        }
+                        if (!firstBestMatch) {
+                            console.error('something wrong - no image was picked! - word = ' + word);
+                            return;
+                        }
+
+                        /* photo example:
+                        {
+                            this.title;
+                            this.id;
+                            this.secret;
+                            this.server;
+                            this.farm;
+                        }
+                        */
+
+                        //build the URL to the image
+
+                        //set the URL on the result (the wordRecord)
+                        //ref: https://www.flickr.com/services/api/misc.urls.html
+                        var imageUrl = 'https://farm{farm-id}.staticflickr.com/{server-id}/{id}_{secret}_q.jpg';
+                        imageUrl = imageUrl.replace('{farm-id}', firstBestMatch.farm);
+                        imageUrl = imageUrl.replace('{server-id}', firstBestMatch.server);
+                        imageUrl = imageUrl.replace('{id}', firstBestMatch.id);
+                        imageUrl = imageUrl.replace('{secret}', firstBestMatch.secret);
+
+                        resultObject[resultProperty] = imageUrl;
+
+                        console.log('found image with word = ' + word);
+                    })
+                    .fail(function (e) {
+                        console.error("ajax error - " + e);
+                    });
+            };
+
+            var getWordFromDictionaryInvoke = function (word, callback) {
+                //TODO the dictionary service should be a child of this component
+                var dict = document.getElementById('dictionary-service1');
+                dict.getWordDetails(word, callback);
+            };
+
+            var addInfoWindowToMarker = function (gMapMarker, mapApi, content) {
+                //try to get a superior image URL from flickr:
+                setImageUrlFromFlickr(gMapMarker.wordRecord, 'imageUrl', gMapMarker.title);
+
+                google.maps.event.addListener(gMapMarker, 'click', (function (marker, content, infowindow) {
+                    var wordRecord = marker.wordRecord;
+
+                    var endLine = '<br/>';
+
+                    var getAbbreviatedDefinitions = function (definitions) {
+                        var defsAbbreviated = _.map(definitions, function (def) {
+                            var maxLen = 120;
+                            if (def.length > maxLen) {
+                                def = def.substr(0, maxLen) + '...';
+                            }
+                            return def;
+                        });
+
+                        return _.reduce(defsAbbreviated, function (memo, def) {
+                            var bullet = '-';
+                            var spacer = bullet;
+                            if(memo && memo.length > 0) {
+                                spacer = endLine + bullet;
+                            }
+                            return memo + spacer + def;
+                        });
+                    };
+
+                    var getTypeAsText = function (wordType) {
+                        if (wordType === '(unknown)') {
+                            return wordType;
+                        }
+
+                        return '[' + wordType + ']';
+                    };
+
+                    var getWordFromDictionary = function () {
+                        //TODO cache the dictionary response, per-word, with version suffix to word
+                        //if (extraContent.length > 0) {
+                        //    infowindow.open(mapApi, marker);
+                        //    return;
+                        //}
+
+                        getWordFromDictionaryInvoke(wordRecord.word, function (dictData) {
+                            var extraContent = '';
+                            if(!dictData.isFound) {
+                                extraContent = '(details not available)';
+                            } else {
+                                extraContent += 'year: ' + dictData.date + endLine;
+                                extraContent += 'type: ' + getTypeAsText(dictData.wordType) + endLine;
+
+                                //TODO match by wordType (e.g. 'verb' for 'keen')
+
+                                extraContent += 'definition: ' + getAbbreviatedDefinitions(dictData.definitions) + endLine;
+
+                                extraContent += 'etymology: ' + dictData.etymology + endLine;
+                            }
+
+                            infowindow.setContent(
+                                "<div style='width: 300px;'>" +
+                                "<img src='" + wordRecord.imageUrl + "' style='float:left; padding-right: 10px;'>" +
+                                "<div style=''>" +
+                                "<h1>" + wordRecord.word + "</h1>" + "</br>" +
+                                "original language:" + wordRecord.originalLanguage + "</br>" +
+                                "original word:" + wordRecord.originalWord + "</br>" +
+                                "dictionary:" + "<a href='" + wordRecord.dictionaryUrl + "' target='_new_window'>link</a>" + "</br>" +
+                                extraContent +
+                                //debugging: content
+                                "</div>" +
+                                "</div>"
+                            );
+        
+                            infowindow.open(mapApi, marker);
+                        });
+                    };
+
+                    return function () {
+                        getWordFromDictionary();
+                    };
+                })(gMapMarker, content, infowindow));
+            };
+
+            var clone = function (obj) {
+                return JSON.parse(JSON.stringify(obj));
+            };
+
+            //ref: http://stackoverflow.com/questions/3548920/google-maps-api-v3-multiple-markers-on-exact-same-spot
+            var correctLocList = function (loclist) {
+                //TODO reduce this radius, to avoid markers in ocean!
+                // degrees of longitude separation (determines the circle radius)
+                var longRadius = 0.4,
+                    //TODO adjust this by the groups lat ?
+                    // lat to long proportion in Warsaw
+                    latToLong = 111.23 / 71.7,
+                    // starting angle, in radians
+                    angle = 0.5,
+                    loclen = loclist.length,
+                    step = 2 * Math.PI / loclen,
+                    i,
+                    loc,
+                    latRadius = longRadius / latToLong;
+
+                var lat,
+                    long;
+
+                for (i = 0; i < loclen; ++i) {
+                    loc = loclist[i];
+
+                    //clone to avoid issue on 1st load, where lat longs are not changed
+                    loc.latLongsCorrected = clone(loc.latLongs);
+
+                    if (loclen > 1) {
+                        lat = loc.latLongsCorrected.lattitude;
+                        long = loc.latLongsCorrected.longitude;
+
+                        loc.latLongsCorrected.longitude = long + (Math.cos(angle) * longRadius);
+                        loc.latLongsCorrected.lattitude = lat + (Math.sin(angle) * latRadius);
+                        angle += step;
+                    }
+                }
+            };
+
+            var moveWordsToUniqueLocations = function (wordRecords) {
+                var wordRecordsByLocation = _.groupBy(wordRecords, function (marker) {
+                    return marker.latLongs.lattitude + '_' + marker.latLongs.longitude;
+                });
+
+                var locations = Object.keys(wordRecordsByLocation);
+                locations.forEach(function (location) {
+                    correctLocList(wordRecordsByLocation[location]);
+                });
+            };
+
+            function addWordRecordsToMap(mapApi, wordRecords) {
+                var markersOnMap = [];
+
+                //for infoWindow, we need the same-location markers to be move slightly:
+                moveWordsToUniqueLocations(wordRecords);
+
+                //TODO add assert that the markers are now indeed uniquely located
+
+                addMarkersWithLocation(mapApi, wordRecords, markersOnMap);
+            }
+
+            var addMarkersToMapWithClustering = function (mapApi, markersOnMap) {
+                //to allow infoWindows for markers that have same location, we use MarkerClustererPlus:
+                //ref: http://google-maps-utility-library-v3.googlecode.com/svn/trunk/markerclustererplus/docs/reference.html
+                var markerCluster = new MarkerClusterer(mapApi, markersOnMap);
+
+                //must be > the maps max zoom:
+                markerCluster.setMaxZoom(7); //when this is too low, can have issue when cluster 'explode' shows no icons!
+            };
+
+            function addMarkersWithLocation(mapApi, wordRecords, markersOnMap) {
+                for (var i = 0; i < wordRecords.length; i++) {
+                    var wordRecord = wordRecords[i];
+
+                    //use the Google Maps API directly
+                    //ref: https://developers.google.com/maps/documentation/javascript/markers
+                    var newMarker = new google.maps.Marker({
+                        //TODO make icon reflect the language ...
+                        //icon: marker.wordRecord.imageUrl,
+                        position: new google.maps.LatLng(wordRecord.latLongsCorrected.lattitude, wordRecord.latLongsCorrected.longitude),
+                        //map: mapApi,
+                        animation: google.maps.Animation.DROP,
+                        //animation: google.maps.Animation.BOUNCE,
+                        //use for debugging:
+                        //draggable: true,
+                        title: wordRecord.word,
+                        //use first letter of language
+                        label: wordRecord.originalLanguage
+                    });
+                    markersOnMap.push(newMarker);
+
+                    newMarker.wordRecord = wordRecord;
+
+                    addInfoWindowToMarker(newMarker, mapApi, wordRecord.content);
+                }
+
+                addMarkersToMapWithClustering(mapApi, markersOnMap);
+            }
+
+            var getLocalStorageKey = function (address) {
+                return 'polymerTryout__geocoding_' + address;
+            };
+
+            //TODO move out to a service module - see TODO in html
+            var getLatLongsFromAddress = function (addressId, address, callback) {
+                //to avoid hitting google quota, we cache in localStorage:
+                //TODO can remove this?
+                var cached = localStorage.getItem(getLocalStorageKey(address));
+                if (cached) {
+                    cached = JSON.parse(cached);
+                    callback(address, cached);
+                    return;
+                }
+
+                var latLongs = {
+                    lattitude: -1,
+                    longitude: -1
+                };
+
+                var apiKey = "AIzaSyD3nNooSi1qE5lCySeNgZjbzT3AAMOQsU4";
+
+                var addressEncoded = encodeURIComponent(address);
+
+                var geoCodeUrl = "https://maps.googleapis.com/maps/api/geocode/json?address=" + addressEncoded + "&key=" + apiKey;
+
+                //ref:
+                //https://developers.google.com/maps/documentation/geocoding/intro
+
+                //example:
+                //https://maps.googleapis.com/maps/api/geocode/json?address=Dublin+Ireland&key=AIzaSyD3nNooSi1qE5lCySeNgZjbzT3AAMOQsU4
+
+                //re: alternative API = the js API:
+                //https://developers.google.com/maps/documentation/javascript/geocoding
+
+                //delay of 1s+ between requests, to stay within quota limits
+                setTimeout(function () {
+                    //TODO review can we remove now: (since we process each address just once)
+                    //need to check cache again, due to race condition!
+                    var cached = localStorage.getItem(getLocalStorageKey(address));
+                    if (cached) {
+                        cached = JSON.parse(cached);
+                        callback(address, cached);
+                        return;
+                    }
+
+                    //use geo service (google) to resolve city name -> lat, long
+                    $.getJSON(geoCodeUrl, function (data) {
+
+                        if (data.status !== 'OK') {
+                            throw "error from geocoding service - " + data.status + " address=" + address;
+                        }
+                        if (data.results.length < 1) {
+                            throw "no geocoding results for address! - address=" + address;
+                        }
+
+                        var location = data.results[0].geometry.location;
+                        //data.results[0].geometry.location
+                        latLongs.lattitude = location.lat;
+                        latLongs.longitude = location.lng;
+
+                        //update cache:
+                        localStorage.setItem(getLocalStorageKey(address), JSON.stringify(latLongs));
+
+                        callback(address, latLongs);
+                    });
+                    //delay of 1s+ between requests, to stay within quota limits
+                }, addressId * 1100);
+            };
+
+            var parseWordRecordFromSheet = function (content) {
+                //parse/split the content into an object
+                /* example:
+                originallanguage: Afrikaans,
+                originalword: apartheid,
+                dictionary: http://oxforddictionaries.com/definition/english/apartheid,
+                image: http://loremflickr.com/150/150/apartheid,
+                city: Cape Town,
+                country: South Africa
+                */
+
+                var wordRecord = {
+                    originalLanguage: '',
+                    originalWord: '',
+                    dictionaryUrl: '',
+                    imageUrl: '',
+                    city: '',
+                    country: ''
+                };
+                var keyValuePairs = content.split(', ');
+                $.each(keyValuePairs, function () {
+                    var pair = this.split(': ');
+                    var key = pair[0].trim();
+                    var value = pair[1].trim();
+                    switch (key) {
+                        case 'originallanguage':
+                            wordRecord.originalLanguage = value;
+                            break;
+                        case 'originalword':
+                            wordRecord.originalWord = value;
+                            break;
+                        case 'dictionary':
+                            wordRecord.dictionaryUrl = value;
+                            break;
+                        case 'image':
+                            wordRecord.imageUrl = value;
+                            break;
+                        case 'city':
+                            wordRecord.city = value;
+                            break;
+                        case 'country':
+                            wordRecord.country = value;
+                            break;
+                        case 'wordtype':
+                            wordRecord.wordType = value;
+                            break;
+                        default:
+                            throw "not a recognised key from gSheet - " + key;
+                    }
+                });
+                return wordRecord;
+            };
+
+            var initialiseProgress = function (maxCount) {
+                var dlg = document.getElementById('progress-dialog1');
+                dlg.maxValue = maxCount;
+                dlg.progress = 0;
+                dlg.open();
+            }
+
+            //TODO should make this component fire an event, and then perform this wiring in main page ?
+            var updateProgress = function (progress) {
+                var dlg = document.getElementById('progress-dialog1');
+                dlg.progress = progress;
+            };
+
+            var closeProgress = function () {
+                var dlg = document.getElementById('progress-dialog1');
+                dlg.progress = dlg.maxValue;
+                dlg.close();
+            };
+
+            //TODO move out to a service module
+            var getMarkersFromGoogleSheets = function (mapApi) {
+
+                $.getJSON(gSheetsUrl, function (data) {
+                    var rows = data.feed.entry;
+
+                    var wordRecords = [];
+
+                    if (isDebugging) {
+                        rows = _.first(rows, 10);
+                    }
+                    //-1. process the rows into word records
+                    $(rows).each(function () {
+                        var title = this.title.$t;
+
+                        var content = this.content.$t;
+
+                        var wordRecord = parseWordRecordFromSheet(content);
+                        wordRecord.word = title;
+
+                        wordRecords.push(wordRecord);
+
+                        return true;
+                    });
+
+                    //0. get the word records by address
+                    var wordRecordsByAddress = _.groupBy(wordRecords, function (wordRecord) {
+                        return wordRecord.city + ' ' + wordRecord.country;
+                    });
+
+                    //1. resolve any addresses that are in the cache
+                    //2. get list of *unresolved* addresses
+                    var unresolvedAddresses = [];
+                    Object.keys(wordRecordsByAddress).forEach(function (address) {
+                        if (isDebugging) {
+                            //debugging - this clears out the storage:
+                            localStorage.removeItem(getLocalStorageKey(address));
+                        }
+                        var cached = localStorage.getItem(getLocalStorageKey(address));
+                        if (cached) {
+                            //update the relevant wordRecords:
+                            wordRecordsByAddress[address].forEach(function (wordRecord) {
+                                wordRecord.latLongs = JSON.parse(cached);
+                            });
+                        } else {
+                            unresolvedAddresses.push(address);
+                        }
+                    });
+
+                    //3. resolve the addresses, and update the wordRecords
+                    var addressId = 0;
+                    //max locations to geocode:
+                    var maxRequests = 250;
+                    var addressesRemaining = unresolvedAddresses.length;
+                    initialiseProgress(addressesRemaining);
+
+                    console.info('processing ' + addressesRemaining + ' addresses to geo code');
+                    if (rows.length > maxRequests) {
+                        console.warn('too many items to geocode!');
+                    }
+                    if (unresolvedAddresses.length === 0) {
+                        console.log('no addresses to geocode -> so adding words directly to map');
+                        addWordRecordsToMap(mapApi, wordRecords);
+                        closeProgress();
+                    } else {
+                        $(unresolvedAddresses).each(function () {
+                            var address = this;
+                            var handleGeoCodeResponse = function (address, latLongs) {
+                                //update the relevant wordRecords:
+                                wordRecordsByAddress[address].forEach(function (wordRecord) {
+                                    //TODO could add marker to cluster
+                                    wordRecord.latLongs = latLongs;
+                                });
+
+                                //we use a progress indicator, since currently there are 43 addresses = 43s to load
+                                updateProgress(unresolvedAddresses.length - addressesRemaining);
+                                addressesRemaining--;
+
+                                //TODO use promises instead? -> .then()
+                                if (addressesRemaining === 0) {
+                                    console.log('finished geocoding -> now adding words to map');
+                                    addWordRecordsToMap(mapApi, wordRecords);
+                                    closeProgress();
+                                }
+                            };
+
+                            //use geo service (google) to resolve city name -> lat, long
+                            getLatLongsFromAddress(addressId, address, handleGeoCodeResponse);
+                            addressId++;
+
+                            //avoid hitting google geocode daily quota:
+                            if (addressId >= maxRequests) {
+                                console.warn('geo requests count has hit hard-coded limit');
+                                return false;
+                            }
+
+                            return true;
+                        });
+                    }
+                });
+            };
+
+            var addDataToMap = function (mapApi) {
+                getMarkersFromGoogleSheets(mapApi);
+            };
+            var map = document.querySelector('google-map');
+
+            map.addEventListener('google-map-ready', function (e) {
+                infowindow = new google.maps.InfoWindow();
+
+                addDataToMap(map.map);
+            });
+        })();
+    </script>
+
+</dom-module>

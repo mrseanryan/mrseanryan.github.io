@@ -1,0 +1,245 @@
+﻿<link rel="import"
+      href="bower_components/polymer/polymer.html">
+<link rel="import" href="bower_components/iron-ajax/iron-ajax.html">
+
+<dom-module id="dictionary-service">
+    <template>
+        <style>
+        </style>
+
+        <div id="dictinaryDebugOutput" style="visibility:hidden;">
+            dictionary response:
+            '{{lastResponse}}'
+
+            error:
+            '{{lastError}}'
+        </div>
+        <!--tried using byutv-jsonp instead of iron-ajax, due to older WS in use, but JSONP is for json only, not XML!-->
+
+        <iron-ajax id="ajax"
+                   url=""
+                   handle-as="xml"
+                   on-response="handleResponse"
+                   on-error="handleError"
+                   debounce-duration="300"
+                   last-response="{{lastResponse}}"
+                   last-error="{{lastError}}">
+        </iron-ajax>
+    </template>
+
+    <script src="scripts/xmlToJson.js"></script>
+    <script src="bower_components/lodash/lodash.min.js"></script>
+
+    <script>
+        //iffy to avoid polluting globals:
+        (function () {
+            'use strict';
+
+            //need a local WS to act as proxy to talk to the cross-origin XML WS :-(
+            var getProxyUrl = function (targetUrl) {
+                var baseUrl = window.location.origin;
+
+                // "http://stackoverflow.com"
+                return baseUrl + '/DictionaryProxyHandler.ashx' + '?url=' + targetUrl;
+            }
+
+            //ref: http://www.dictionaryapi.com/
+            /*examples:
+                dictionary:
+                http://www.dictionaryapi.com/api/v1/references/collegiate/xml/wonderful?key=43ff6ed6-94a1-4e5d-881a-e85a37550217
+
+                thesaurus:
+                http://www.dictionaryapi.com/api/v1/references/thesaurus/xml/wonderful?key=31d8e1ad-bb4a-4a41-93ea-8c0a109620db
+            */
+            var getUrlForDictionary = function (word) {
+                return 'http://www.dictionaryapi.com/api/v1/references/collegiate/xml/{word}?key=43ff6ed6-94a1-4e5d-881a-e85a37550217'.replace('{word}', word);
+            };
+
+            var getUrlForThesaurus = function (word) {
+                return 'http://www.dictionaryapi.com/api/v1/references/thesaurus/xml/{word}?key=31d8e1ad-bb4a-4a41-93ea-8c0a109620db'.replace('{word}', word);
+            };
+
+            var _getTextFromArrayOrEmpty = function (arr, i) {
+                return arr.length > i ? arr[i] : '';
+            };
+
+            var _getAsArray = function (objOrArray) {
+                if (!objOrArray) {
+                    return [];
+                }
+
+                return _.isArray(objOrArray) ? objOrArray : [objOrArray];
+            };
+
+            var _collapseArrayToText = function(et, addQuotes) {
+                if (!et) {
+                    return '(not available)';
+                }
+                if (_.isString(et)) {
+                    return et;
+                }
+
+                //the original order is lost in xmlToJson.js, but we can simply flatten to text:
+
+                var textNodes = et['#text'];
+                textNodes = _getAsArray(textNodes);
+
+                var wordNodes = et.it;
+                wordNodes = _getAsArray(wordNodes);
+
+                var maxIndex = Math.max(textNodes.length, wordNodes.length);
+
+                var text = '';
+                for (var i = 0; i < maxIndex; i++) {
+                    if (text.length > 0) {
+                        text += ' ';
+                    }
+
+                    text += _getTextFromArrayOrEmpty(textNodes, i) + ' ';
+
+                    var words = _getTextFromArrayOrEmpty(wordNodes, i);
+                    if (words.length > 0) {
+                        if (addQuotes) {
+                            words = "'" + words + "'";
+                        }
+                        text += words;
+                    }
+                }
+                return text;
+            };
+
+            var _collapseArrayToTextWithQuotes = function(et) {
+                return _collapseArrayToText(et, true);
+            };
+
+            var _collapseArrayToTextNoQuotes = function(et) {
+                return _collapseArrayToText(et, false);
+            };
+
+            var _parseEtymology = function (et) {
+                return _collapseArrayToTextWithQuotes(et);
+            };
+
+            var _parseDefinitions = function (def) {
+                var nullText = '(not available)';
+                if (!def) {
+                    return [nullText];
+                }
+
+                //TODO we are skipping some minor uses here - see data (def.sn)
+
+                var definitions = def.dt;
+
+                if (!_.isArray(definitions)) {
+                    //special case for some words :-(
+                    if (definitions.sx) {
+                        definitions = definitions.sx;
+                    }
+                    definitions = [definitions];
+                }
+
+                var defs = _.map(definitions, function (dt) {
+                    return _collapseArrayToTextNoQuotes(dt);
+                });
+
+                //chop leading ':'
+                defs = _.map(defs, function (def) {
+                    if (def && def.length > 0 && def[0] === ':') {
+                        def = def.substr(1, def.length - 1);
+                    }
+                    return def.trim();
+                });
+
+                defs = _.filter(defs, function(def) {
+                    return def && def.length > 0;
+                });
+
+                return defs.length > 0 ? defs : [nullText];
+            };
+
+            var _parseData = function (data, word) {
+                var parsed = {
+                    word: word
+                };
+
+                var record = data.entry;
+                if (_.isArray(record)) {
+                    //TODO we could take ALL the matching words, not just the first:
+                    record = _.findWhere(data.entry, { id: word });
+
+                    if (!record) {
+                        //try to find the 1st of many records:
+                        record = _.findWhere(data.entry, { id: word + '[1]' });
+                    }
+
+                    if (!record) {
+                        //try to find the 1st of many records:
+                        record = _.first(data.entry);
+                    }
+                }
+
+                if (!record) {
+                    parsed.isFound = false;
+                    return parsed;
+                }
+                parsed.isFound = true;
+
+                parsed.date = (record.def && record.def.date) || '(unknown)';
+                parsed.wordType = record.fl || '(unknown)';
+
+                parsed.definitions = _parseDefinitions(record.def);
+
+                parsed.etymology = _parseEtymology(record.et);
+
+                return parsed;
+            };
+
+            Polymer({
+                is: "dictionary-service",
+                properties: {
+                    //word: {
+                    //    type: String,
+                    //    notify: true,
+                    //    readOnly: false
+                    //}
+                },
+                getWordDetails: function (word, callback) {
+                    this._word = word;
+                    this._callback = callback;
+
+                    this.$.ajax.url = getProxyUrl(getUrlForDictionary(word));
+
+                    //this.$.ajax.params = { "userId": "1" };
+                    this.$.ajax.generateRequest();
+                },
+                handleResponse: function (request) {
+                    var xml = request.detail.response;
+                    
+                    //test XML parsing
+                    //var parser = new DOMParser();
+                    //xml = '<x1><et>Dutch<it>koekje,</it>diminutive of<it>koek</it>cake</et>=><et><it>koekje,</it><it>koek</it></et></x1>';
+                    //xml = parser.parseFromString(xml, "text/xml");
+
+                    var data = xmlToJson.parseXml(xml);
+
+                    var word = this._word;
+                    if (!word) {
+                        throw 'please set the "word" property before calling this method';
+                    }
+                    var wordDetails = _parseData(data, word);
+
+                    var dataAsText = JSON.stringify(wordDetails);
+                    console.log('dictionary rsp: ' + dataAsText);
+
+                    this.lastResponse = dataAsText;
+
+                    this._callback.call(this, wordDetails);
+                },
+                handleError: function (evt, data) {
+                    console.error('dictionary: ajax call failed!');
+                }
+            });
+        })();
+    </script>
+
+</dom-module>

@@ -1,0 +1,56 @@
+﻿<link rel="import"
+      href="bower_components/polymer/polymer.html">
+<link rel="import" href="bower_components/paper-dialog/paper-dialog.html">
+<link rel="import" href="bower_components/paper-progress/paper-progress.html">
+
+<dom-module id="progress-dialog">
+
+    <template>
+        <style>
+            paper-dialog.modal-dialog {
+                position: fixed;
+                top: 220px;
+                left: auto;
+                right: auto;
+                width: 250px;
+                height: 100px;
+                overflow: auto;
+            }
+        </style>
+
+        <paper-dialog id="modal" class="modal-dialog" modal heading="Loading...">
+            <p>Getting ready ...</p>
+            <paper-progress value="{{progress}}" min="0" max="{{maxValue}}"></paper-progress>
+        </paper-dialog>
+
+    </template>
+
+    <script>
+        //iffy to avoid polluting globals:
+        (function () {
+            'use strict';
+            Polymer({
+                is: "progress-dialog",
+                properties: {
+                    progress: {
+                        type: Number,
+                        notify: true,
+                        readOnly: false
+                    },
+                    maxValue: {
+                        type: Number,
+                        notify: true,
+                        readOnly: false
+                    }
+                },
+                open: function () {
+                    this.$.modal.open();
+                },
+                close: function () {
+                    this.$.modal.close();
+                }
+            });
+        })();
+    </script>
+
+</dom-module>
