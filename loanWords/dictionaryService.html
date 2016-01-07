@@ -217,6 +217,11 @@
                 handleResponse: function (request) {
                     var xml = request.detail.response;
                     
+                    if (!xml) {
+                        //occurred when deployed to host that does not enable ASHX files:
+                        return this.handleError(null, 'xml was null!');
+                    }
+
                     //test XML parsing
                     //var parser = new DOMParser();
                     //xml = '<x1><et>Dutch<it>koekje,</it>diminutive of<it>koek</it>cake</et>=><et><it>koekje,</it><it>koek</it></et></x1>';
